@@ -96,7 +96,7 @@ $ docker compose down -v
 
 ---
 
-## 3. Ejecución del stack con las versiones pinadas
+## 3. Ejecución del stack con las versiones ya fijas
 
 ```bash
 $ docker compose up -d --build
@@ -287,7 +287,7 @@ db-1 | 2026-11-01 19:57:18.723 UTC [1] LOG:  database system is ready to accept 
 
 El cluster se encontró ya inicializado y PostgreSQL **no** volvió a bootstrapar: eso prueba que el volumen `db-data` conservó el estado del motor entre `down` y `up`.
 
-### 5.4 Consulta tras el `up` — ojo con el `prepare()` del backend
+### 5.4 Consulta tras el `up` — por qué la fila añadida a `blog` desaparece
 
 ```bash
 $ docker exec nginx-golang-postgres-db-1 psql -U postgres -d example -c "SELECT * FROM blog;"
@@ -301,7 +301,7 @@ $ docker exec nginx-golang-postgres-db-1 psql -U postgres -d example -c "SELECT 
 (5 rows)
 ```
 
-Las filas vuelven a ser los 5 *seeds* y la fila `#6` que insertamos a mano desapareció. Esto **no** significa que el volumen haya fallado: el motor confirma que reutilizó el cluster. La causa está en el código del backend (`backend/main.go` → función `prepare()`):
+Las filas vuelven a ser las cinco iniciales y la `#6` que insertamos a mano desapareció. **El volumen sí persiste** — el motor acaba de confirmar que reutilizó el cluster y la prueba independiente de §5.6 (sobre una tabla que el backend no toca) lo demuestra sin ambigüedad. Lo que borra la fila añadida es exclusivamente el código del backend, en `backend/main.go` → función `prepare()`:
 
 ```go
 if _, err := db.Exec("DROP TABLE IF EXISTS blog"); err != nil { … }
@@ -309,10 +309,7 @@ if _, err := db.Exec("CREATE TABLE IF NOT EXISTS blog (id SERIAL, title VARCHAR)
 for i := 0; i < 5; i++ { INSERT … "Blog post #" + i … }
 ```
 
-Cada vez que arranca el backend, borra y recrea la tabla `blog` con los 5 posts de ejemplo. Por tanto, en este stack:
-
-- El **cluster** de PostgreSQL persiste en `db-data` (demostrado por los logs del motor).
-- La **tabla `blog`** la reescribe la aplicación en cada arranque; cualquier fila añadida *ad hoc* se pierde al reiniciar el backend.
+Cada vez que arranca el backend, borra y recrea la tabla `blog` con los cinco registros de ejemplo. Por eso, aunque el volumen conserve el estado del motor, cualquier fila añadida *ad hoc* a `blog` se pierde al reiniciar el backend. Para separar la responsabilidad del volumen (que sí persiste) de la del `prepare()` del backend (que sobrescribe `blog`) se añade §5.6.
 
 ### 5.5 `docker compose down -v` (no ejecutado) — comportamiento esperado
 
@@ -322,7 +319,64 @@ Si en lugar de `docker compose down` se ejecutara **`docker compose down -v`** (
 2. Además eliminaría los volúmenes con nombre definidos en el `compose.yaml` (`db-data`).
 3. En el siguiente `up`, Postgres encontraría el directorio vacío y ejecutaría la rutina `initdb` completa (crearía `example`, aplicaría roles, etc.).
 
-Es decir: `down` deja los datos en reposo, mientras que `down -v` los borra **y además** elimina el estado durable del motor. En este ejemplo concreto la diferencia visible para el usuario es pequeña porque el backend reescribe la tabla, pero en una aplicación real (sin DROP TABLE en el arranque) la diferencia sería total.
+Es decir: `down` deja los datos en reposo, mientras que `down -v` los borra **y además** elimina el estado durable del motor. En este ejemplo concreto la diferencia visible para el usuario parece pequeña porque el backend reescribe la tabla `blog` en cada arranque, pero en una aplicación real (sin `DROP TABLE` en el arranque) la diferencia sería total — lo demuestra §5.6, donde los datos de una tabla que el backend no toca sobreviven al `down`.
+
+### 5.6 Prueba limpia de persistencia con una tabla ajena al backend
+
+Para probar la persistencia del volumen sin que el `prepare()` del backend interfiera, se crea una tabla nueva (`persistencia`) que la aplicación no conoce ni manipula. Si la fila sobrevive a un `down` + `up`, queda demostrado que el volumen efectivamente conserva los datos.
+
+**Paso 1 — crear la tabla y una fila de control (stack arriba):**
+
+```bash
+$ docker exec nginx-golang-postgres-db-1 psql -U postgres -d example \
+    -c "CREATE TABLE persistencia (id serial, nota text, creado timestamptz default now());"
+CREATE TABLE
+
+$ docker exec nginx-golang-postgres-db-1 psql -U postgres -d example \
+    -c "INSERT INTO persistencia (nota) VALUES ('fila creada antes del down para probar que el volumen persiste');"
+INSERT 0 1
+
+$ docker exec nginx-golang-postgres-db-1 psql -U postgres -d example -c "SELECT * FROM persistencia;"
+ id |                              nota                              |            creado
+----+----------------------------------------------------------------+-------------------------------
+  1 | fila creada antes del down para probar que el volumen persiste | 2026-11-01 20:05:41.425453+00
+(1 row)
+```
+
+**Paso 2 — `docker compose down` (sin `-v`) y verificación de que el volumen sigue existiendo:**
+
+```bash
+$ docker compose down
+ Container nginx-golang-postgres-backend-1  Removed
+ Container nginx-golang-postgres-db-1       Removed
+ Network nginx-golang-postgres_default      Removed
+
+$ docker volume ls --filter name=nginx-golang-postgres
+DRIVER    VOLUME NAME
+local     nginx-golang-postgres_db-data
+```
+
+**Paso 3 — `docker compose up -d`, esperar a `healthy` y volver a consultar:**
+
+```bash
+$ docker compose up -d
+ Container nginx-golang-postgres-db-1       Healthy
+ Container nginx-golang-postgres-backend-1  Started
+ Container nginx-golang-postgres-proxy-1    Started
+
+$ until docker exec nginx-golang-postgres-db-1 pg_isready -U postgres > /dev/null 2>&1; do sleep 1; done; echo "ready"
+ready
+
+$ docker exec nginx-golang-postgres-db-1 psql -U postgres -d example -c "SELECT * FROM persistencia;"
+ id |                              nota                              |            creado
+----+----------------------------------------------------------------+-------------------------------
+  1 | fila creada antes del down para probar que el volumen persiste | 2026-11-01 20:05:41.425453+00
+(1 row)
+```
+
+La fila sigue ahí, con el mismo `id`, la misma `nota` y el mismo `creado` que antes del `down`. Esto cierra la demostración: **el volumen `db-data` persiste los datos entre `down` y `up`**. Lo que se perdió en §5.4 fue responsabilidad del `prepare()` del backend, no del volumen.
+
+**[CAPTURA 5]** Terminal con el `SELECT * FROM persistencia;` posterior al `down + up` mostrando la fila con el `creado` original.
 
 ---
 
@@ -341,12 +395,13 @@ Es decir: `down` deja los datos en reposo, mientras que `down -v` los borra **y 
 - [x] Carpeta `nginx-golang-postgres` traída desde `docker/awesome-compose` sin `.git`.
 - [x] `ORIGEN.md` con URL, SHA del commit (`30f4b7f…`), licencia (CC0) y cambios aplicados.
 - [x] Puerto 80 revisado; conflicto con Herd documentado y resuelto con remapeo `8080:80` (C3).
-- [x] Primer intento con `postgres` sin pinear → fallo capturado literal.
+- [x] Primer intento con `postgres` sin versión fija → fallo capturado literal.
 - [x] Corrección mínima aplicada: `postgres:17-alpine`, `nginx:1.27-alpine`.
 - [x] `docker compose up -d --build` sale limpio y `docker compose ps` muestra `db (healthy)`.
 - [x] `curl -i http://localhost:8080/` devuelve el JSON de los títulos.
 - [x] `psql` dentro de `db` lista las 5 filas de `blog`.
 - [x] `docker volume ls` y `docker network ls` filtrados muestran los artefactos del proyecto.
-- [x] Persistencia probada con `down` + `up`: cluster preservado (log *Skipping initialization*).
+- [x] Persistencia del motor probada con `down` + `up`: cluster preservado (log *Skipping initialization*).
+- [x] Persistencia de datos probada con una tabla ajena al backend (`persistencia`, §5.6): la fila sobrevive al `down` + `up` con `id`, `nota` y `creado` intactos.
 - [x] Diferencia `down` vs `down -v` explicada sin ejecutar `-v`.
 - [x] Orden de arranque demostrado con logs *timestamps* (db healthy → backend → proxy).

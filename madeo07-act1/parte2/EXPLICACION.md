@@ -2,7 +2,7 @@
 
 Este documento acompaña a [`EVIDENCIAS.md`](EVIDENCIAS.md) y a [`ORIGEN.md`](ORIGEN.md). Está dirigido a la rúbrica académica de la Actividad 1 — Parte 2 (Contenedores, Maestría en DevOps, UNIR), por lo que la lectura es minuciosa: se explica **cada línea** del `backend/Dockerfile` y del `compose.yaml` tal como vienen en `docker/awesome-compose`.
 
-Los dos archivos no se tocaron salvo lo justificado en [`ORIGEN.md`](ORIGEN.md) (versiones pinadas y remapeo de puerto). Las referencias a *la etapa X* o *la línea Y* son sobre el texto original.
+Los dos archivos no se tocaron salvo lo justificado en [`ORIGEN.md`](ORIGEN.md) (versiones con versión fija y remapeo de puerto). Las referencias a *la etapa X* o *la línea Y* son sobre el texto original.
 
 ---
 
@@ -63,7 +63,7 @@ RUN --mount=type=cache,target=/go/pkg/mod/cache \
 ```
 
 - Trae ahora el resto del código fuente (orden intencional: código después de dependencias, para preservar la caché).
-- Dos *cache mounts* esta vez: el de módulos (igual que antes) y además `/go-build` para la caché de artefactos de compilación de Go. En re-builds con cambios pequeños, solo se recompilan los paquetes afectados.
+- Dos *cache mounts* esta vez: el de módulos (igual que antes) y además `/go-build` para la caché de artefactos de compilación de Go. En reconstrucciones con cambios pequeños, solo se recompilan los paquetes afectados.
 - `go build -o bin/backend main.go` produce el binario en `/code/bin/backend`.
 
 ```dockerfile
@@ -99,7 +99,7 @@ CMD ["go", "run", "main.go"]
 - `COPY --from=gloursdocker/docker / /` arrastra el CLI de Docker, `buildx` y `compose` desde la imagen `gloursdocker/docker` para que el contenedor de desarrollo pueda, a su vez, hablar con el daemon de Docker del host.
 - El `CMD` cambia a `go run main.go`: en desarrollo interesa el ciclo *edit-run* sin pasar por `go build` cada vez.
 
-**Esta etapa no se usa en nuestra ejecución con Docker Compose.** Compose llama a `target: builder` (ver §2.2); la etapa `dev-envs` solo se activa si alguien lanza `docker build --target dev-envs ...` manualmente o desde la UI de Dev Environments.
+**Esta etapa no se usa en nuestra ejecución con Docker Compose.** Compose llama a `target: builder` (ver §2.1); la etapa `dev-envs` solo se activa si alguien lanza `docker build --target dev-envs ...` manualmente o desde la UI de Dev Environments.
 
 ### 1.3 Etapa final anónima — `FROM scratch`
 
@@ -119,9 +119,9 @@ CMD ["/usr/local/bin/backend"]
 - Tamaño de imagen pequeñísimo (unos pocos MB).
 - Sin paquetes del sistema que mantener/parchear.
 
-Como contrapartida: no se puede entrar al contenedor con `docker exec … sh`, no hay `curl` para `HEALTHCHECK` y no hay utilidades para debugging — por eso en producción algunos equipos prefieren `distroless/static` o `alpine`.
+Como contrapartida: no se puede entrar al contenedor con `docker exec … sh`, no hay `curl` para `HEALTHCHECK` y no hay utilidades para depuración — por eso en producción algunos equipos prefieren `distroless/static` o `alpine`.
 
-> **Nota operativa (importante para la rúbrica).** El `compose.yaml` del ejemplo establece `target: builder` en el bloque `build` del servicio `backend` (ver §2.2). Esto significa que **cuando ejecutamos `docker compose up -d --build`, la etapa `scratch` no interviene**: Compose detiene el build en la etapa `builder`, y el contenedor `backend` arranca a partir de `golang:1.18-alpine` con el binario adentro, no de `scratch`. La imagen final `scratch` queda disponible en el `Dockerfile` como opción de empaquetado para producción, pero este proyecto no la utiliza en el flujo documentado.
+> **Nota operativa (importante para la rúbrica).** El `compose.yaml` del ejemplo establece `target: builder` en el bloque `build` del servicio `backend` (ver §2.1). Esto significa que **cuando ejecutamos `docker compose up -d --build`, la etapa `scratch` no interviene**: Compose detiene la construcción en la etapa `builder`, y el contenedor `backend` arranca a partir de `golang:1.18-alpine` con el binario adentro, no de `scratch`. La imagen final `scratch` queda disponible en el `Dockerfile` como opción de empaquetado para producción, pero este proyecto no la utiliza en el flujo documentado.
 
 ---
 
@@ -175,14 +175,14 @@ services:
       retries: 5
 ```
 
-- `image: postgres:17-alpine` — en el original era `image: postgres`. Fijar la versión era obligatorio para builds reproducibles y, además, PostgreSQL 18 (lo que resolvía el tag `latest`) rechaza el volumen montado en `/var/lib/postgresql/data` (ver [`EVIDENCIAS.md`](EVIDENCIAS.md) §2.1).
+- `image: postgres:17-alpine` — en el original era `image: postgres`. Fijar una versión concreta fue necesario porque el tag sin versión resolvió a PostgreSQL 18, que rechaza el volumen montado en `/var/lib/postgresql/data` (ver [`EVIDENCIAS.md`](EVIDENCIAS.md) §2.1 para el error literal). Al margen de ese error puntual, dejar la imagen sin versión es también una mala práctica porque introduce variabilidad entre ejecuciones.
 - `restart: always` — si el proceso muere, Docker lo relanza indefinidamente. Útil en producción; en desarrollo se discute con el equipo. Es independiente de `depends_on`.
 - `user: postgres` — fija el usuario del proceso dentro del contenedor. Buena práctica: ningún proceso corre como root.
 - `secrets: - db-password` — igual que en `backend`. El entrypoint de la imagen de Postgres lee `POSTGRES_PASSWORD_FILE` y aplica la contraseña al rol `postgres`.
 - `volumes: - db-data:/var/lib/postgresql/data` — monta el **volumen con nombre** `db-data` (declarado al final del archivo) en la ruta donde Postgres guarda su cluster. Es el único mecanismo que da **persistencia**: sin esta línea, los datos vivirían dentro de la capa escribible del contenedor y se perderían con cada `docker compose down`.
 - `environment` — define la base inicial (`POSTGRES_DB=example`) y de dónde leer la contraseña.
 - `expose: - 5432` — **declara** el puerto en el que escucha PostgreSQL dentro de la red Docker, pero **no lo publica** al host. Solo los contenedores en la misma red interna pueden alcanzar `db:5432`. Esto es intencional: los puertos de base de datos no deben estar expuestos al host en despliegues normales.
-- `healthcheck` — ejecuta `pg_isready` cada 10 s con timeout de 5 s. El servicio pasa a `healthy` tras la primera respuesta exitosa. Es lo que destraba el `backend` (sección 2.1).
+- `healthcheck` — ejecuta `pg_isready` cada 10 s con timeout de 5 s. El servicio pasa a `healthy` tras la primera respuesta exitosa. Es lo que habilita el arranque de `backend` (sección 2.1).
 
 ### 2.3 Servicio `proxy`
 
@@ -200,10 +200,10 @@ services:
       - backend
 ```
 
-- `image: nginx:1.27-alpine` — misma lógica de pineo de versión (C2).
+- `image: nginx:1.27-alpine` — misma lógica de fijar una versión concreta (C2).
 - `volumes` con `type: bind` + `read_only: true` — se monta el archivo `proxy/nginx.conf` del host sobre `/etc/nginx/conf.d/default.conf`. La diferencia respecto al volumen con nombre de `db` es grande:
   - *Bind mount*: liga una ruta concreta del host a una ruta del contenedor. Útil para inyectar configuración o para desarrollo (edición en caliente). Depende del sistema de archivos del host.
-  - *Volumen con nombre*: lo gestiona Docker, vive en `/var/lib/docker/volumes/`, es portátil entre máquinas con la misma versión de Docker y es la opción recomendada para datos.
+  - *Volumen con nombre*: lo gestiona Docker, vive en `/var/lib/docker/volumes/` y es la opción recomendada para datos persistentes porque desacopla el ciclo de vida del dato del contenedor.
   - `read_only: true` evita que el contenedor pueda escribir sobre el archivo de configuración (defensa en profundidad). Nginx solo necesita leerlo.
 - `ports: - 8080:80` — publica el puerto 80 del contenedor en el puerto 8080 del host (en el original era `80:80`; se cambió por el conflicto con Laravel Herd — ver [`ORIGEN.md`](ORIGEN.md) C3). La diferencia con `expose` es crucial: `ports` **sí** abre el puerto al host; `expose` es solo una anotación interna.
 - `depends_on: - backend` — forma corta, sin `condition`. Solo garantiza que el contenedor `backend` haya empezado a arrancar antes de que el `proxy` arranque. **No** espera a un healthcheck del backend (no hay healthcheck definido en `backend`).
@@ -256,15 +256,22 @@ Lo que ya se hizo con `postgres` y `nginx` debería extenderse a cualquier otra 
 
 ### 3.2 Usar la etapa final (`scratch`) también desde Compose
 
-Actualmente `compose.yaml` tiene `target: builder`. La imagen que corre el backend es, por tanto, `golang:1.18-alpine` con el binario encima — unos 494 MB. Si se cambiara a:
+Actualmente `compose.yaml` tiene `target: builder`. La imagen que corre el backend es, por tanto, `golang:1.18-alpine` con el binario encima; el tamaño medido con `docker images` es **494 MB**:
 
-```yaml
-build:
-  context: backend
-  # sin target: usa la última etapa del Dockerfile (FROM scratch)
+```bash
+$ docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" | grep backend
+nginx-golang-postgres-backend   latest   494MB
 ```
 
-la imagen final sería del tamaño del binario (unos pocos MB), con las ventajas de seguridad descritas en §1.3. Esto sería recomendable para el despliegue real; la razón de dejar `target: builder` es, probablemente, que el ejemplo pretende servir también como entorno de desarrollo donde `go run` es útil.
+Si en el `compose.yaml` se quitara `target: builder` (dejando que la construcción llegue a la etapa anónima `FROM scratch`), la imagen final mediría **11,3 MB** — valor obtenido construyendo manualmente la etapa final con `docker build .` desde la misma carpeta `backend/`:
+
+```bash
+$ docker build --platform linux/arm64 -t probe-scratch:local backend/
+$ docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" | grep probe-scratch
+probe-scratch                   local    11.3MB
+```
+
+Es decir, la imagen que correría en producción sería unas 44 veces más pequeña y, además, tendría las ventajas de seguridad descritas en §1.3. La razón de que el ejemplo deje `target: builder` es, probablemente, que pretende servir también como entorno de desarrollo en el que `go run` resulta útil.
 
 ### 3.3 Añadir `healthcheck` al servicio `backend`
 
@@ -288,9 +295,21 @@ El reto en este stack concreto es que la etapa `builder` no trae `wget`; habría
 
 ### 3.4 Idempotencia del `prepare()` del backend
 
-Como se mostró en [`EVIDENCIAS.md`](EVIDENCIAS.md) §5.4, el backend hace `DROP TABLE IF EXISTS blog` en cada arranque, lo que destruye cualquier dato añadido entre reinicios. En una aplicación real, la seeding debería ser:
+Como se mostró en [`EVIDENCIAS.md`](EVIDENCIAS.md) §5.4, el backend hace `DROP TABLE IF EXISTS blog` en cada arranque, lo que destruye cualquier dato añadido a la tabla `blog` entre reinicios. Importante: esto **no** significa que el volumen falle — la prueba independiente de §5.6 (sobre una tabla `persistencia` que el backend no toca) demuestra que el volumen conserva los datos. El problema es puramente del código de la aplicación. En un proyecto real, la carga inicial de datos debería ser:
 
-- Idempotente (p. ej. `CREATE TABLE IF NOT EXISTS` + `INSERT ... ON CONFLICT DO NOTHING`),
-- Gestionada por una herramienta de migraciones (goose, flyway, etc.), no inline.
+- Idempotente (p. ej. `CREATE TABLE IF NOT EXISTS` + `INSERT ... ON CONFLICT DO NOTHING`).
+- Gestionada por una herramienta de migraciones (goose, flyway, etc.), no en línea con el arranque del servidor.
 
-Esta mejora excede el alcance de la Parte 2 pero conviene señalarla porque explica por qué, aun con el volumen persistente, la fila añadida a mano se pierde.
+Esta mejora excede el alcance de la Parte 2 pero conviene señalarla porque explica por qué, en este ejemplo concreto, los datos añadidos a la tabla `blog` se pierden al reiniciar.
+
+### 3.5 El archivo `db/password.txt` está versionado
+
+El ejemplo trae el secreto de la base de datos (`db/password.txt`) committed en el repositorio para que funcione *out of the box*. Este fichero se expone a los contenedores como `/run/secrets/db-password` mediante el bloque `secrets:` del `compose.yaml` (ver §2.5).
+
+En este trabajo se conserva tal cual **porque forma parte del material que se evalúa** (ejecutar y documentar el ejemplo original). En un entorno real nunca debería versionarse: lo apropiado es generar la contraseña fuera del repositorio y entregarla por un gestor de secretos externo. Opciones habituales:
+
+- **Docker Swarm / Kubernetes secrets**: definir el secreto en el orquestador y montarlo con el mismo bloque `secrets:` de Compose.
+- **Gestor dedicado**: HashiCorp Vault, AWS Secrets Manager, Google Secret Manager, 1Password, etc., inyectando el secreto en tiempo de despliegue.
+- **Variables de entorno de la plataforma**: menos recomendable que las dos anteriores, pero mejor que committear el fichero.
+
+En cualquiera de los tres casos, `db/password.txt` quedaría fuera del repositorio y entraría al `.gitignore`.
