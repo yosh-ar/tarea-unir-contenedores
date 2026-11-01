@@ -1,0 +1,11 @@
+# Nada relacionado con control de versiones ni editores debe entrar al build.
+.git
+.gitignore
+.DS_Store
+.idea
+.vscode
+*.log
+*.md
+# Evitamos re-copiar el propio Dockerfile y este archivo al contexto final.
+Dockerfile
+.dockerignore
