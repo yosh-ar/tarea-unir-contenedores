@@ -26,12 +26,17 @@ tarea-unir-contenedores/
     │   ├── cap06-dockerhub.png
     │   ├── cap07-dockerhub-tags.png
     │   └── cap08-docker-pull.png
-    └── parte1/
-        ├── app-php/         # index.php, Dockerfile, .dockerignore, README.md
-        ├── app-ruby/        # server.rb, Dockerfile, .dockerignore, README.md
-        ├── app-dart/        # pubspec.yaml, bin/server.dart, Dockerfile, .dockerignore, README.md
-        ├── run-all.sh       # Reconstruye, levanta y verifica las tres apps en local
-        └── EVIDENCIAS.md    # Bitácora de la ejecución con salidas reales
+    ├── parte1/
+    │   ├── app-php/         # index.php, Dockerfile, .dockerignore, README.md
+    │   ├── app-ruby/        # server.rb, Dockerfile, .dockerignore, README.md
+    │   ├── app-dart/        # pubspec.yaml, bin/server.dart, Dockerfile, .dockerignore, README.md
+    │   ├── run-all.sh       # Reconstruye, levanta y verifica las tres apps en local
+    │   └── EVIDENCIAS.md    # Bitácora de la ejecución con salidas reales
+    └── parte2/
+        ├── ORIGEN.md        # Procedencia del ejemplo (URL, commit, licencia) y cambios aplicados
+        ├── EVIDENCIAS.md    # Bitácora de la ejecución del stack con compose
+        ├── EXPLICACION.md   # Explicación línea por línea del Dockerfile y del compose.yaml
+        └── nginx-golang-postgres/   # Ejemplo tomado de docker/awesome-compose (CC0)
 ```
 
 ---
@@ -102,4 +107,25 @@ El script `run-all.sh`:
 
 ## Parte 2 — Docker Compose
 
-En construcción.
+La Parte 2 **no desarrolla una aplicación nueva**: se ejecuta y documenta un ejemplo existente del repositorio oficial [`docker/awesome-compose`](https://github.com/docker/awesome-compose). Concretamente, el stack `nginx-golang-postgres`, que levanta tres servicios conectados por una red Docker interna:
+
+| Servicio  | Imagen                                        | Expone / publica        | Rol                                              |
+|-----------|-----------------------------------------------|-------------------------|--------------------------------------------------|
+| `proxy`   | `nginx:1.27-alpine`                           | publica `8080→80`       | reverse proxy que enruta `/` a `backend:8000`    |
+| `backend` | build local (Go 1.18 + Alpine)                | solo red interna        | API HTTP en Go que consulta la tabla `blog`      |
+| `db`      | `postgres:17-alpine`                          | solo red interna (`5432`) | base de datos con volumen persistente `db-data` |
+
+Documentación de la Parte 2 (en `madeo07-act1/parte2/`):
+
+- [`ORIGEN.md`](madeo07-act1/parte2/ORIGEN.md) — trazabilidad del origen (URL, commit, licencia CC0) y lista de cambios mínimos aplicados respecto al ejemplo original.
+- [`EVIDENCIAS.md`](madeo07-act1/parte2/EVIDENCIAS.md) — bitácora completa con la salida real de cada paso: fallo con PostgreSQL 18, corrección mínima, verificación con `curl`/`psql`, prueba de persistencia y análisis del orden de arranque.
+- [`EXPLICACION.md`](madeo07-act1/parte2/EXPLICACION.md) — explicación línea por línea del `backend/Dockerfile` (multi-stage con `scratch`) y del `compose.yaml` (secretos, `depends_on` con `condition`, healthcheck, volúmenes vs *bind mounts*, red por defecto con DNS por nombre de servicio).
+
+Para reproducir:
+
+```bash
+cd madeo07-act1/parte2/nginx-golang-postgres
+docker compose up -d --build
+curl -i http://localhost:8080/
+# ["Blog post #0","Blog post #1","Blog post #2","Blog post #3","Blog post #4"]
+```
