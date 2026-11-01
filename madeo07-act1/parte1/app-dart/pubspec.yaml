@@ -1,0 +1,7 @@
+name: app_dart
+description: Microservicio HTTP mínimo en Dart para la Actividad 1 de Contenedores (UNIR).
+version: 1.0.0
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'

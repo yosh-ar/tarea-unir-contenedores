@@ -1,0 +1,14 @@
+.git
+.gitignore
+.DS_Store
+.idea
+.vscode
+*.log
+*.md
+# Carpetas y archivos propios del SDK de Dart, para que el build empiece limpio.
+.dart_tool/
+.packages
+build/
+pubspec.lock
+Dockerfile
+.dockerignore
